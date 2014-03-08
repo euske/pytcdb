@@ -34,6 +34,23 @@ else:
   def encode(a):
     return a.tostring()
 
+# parsetext
+def parsetext(lines):
+  import re
+  HEAD = re.compile(r'^(\++)(\d+),(\d+):')
+  for line in lines:
+    m = HEAD.match(line)
+    if not m: break
+    (depth, klen, vlen) = (len(m.group(1)), int(m.group(2)), int(m.group(3)))
+    i = len(m.group(0))
+    k = line[i:i+klen]
+    i += klen
+    if line[i:i+2] != '->': raise ValueError('invalid separator: %r' % line)
+    i += 2
+    v = line[i:i+vlen]
+    yield (depth, k, v)
+  return
+
 
 ##  CDB
 ##
@@ -225,18 +242,7 @@ class CDBMaker(object):
 
   # txt2cdb
   def txt2cdb(self, lines):
-    import re
-    HEAD = re.compile(r'^\+(\d+),(\d+):')
-    for line in lines:
-      m = HEAD.match(line)
-      if not m: break
-      (klen, vlen) = (int(m.group(1)), int(m.group(2)))
-      i = len(m.group(0))
-      k = line[i:i+klen]
-      i += klen
-      if line[i:i+2] != '->': raise ValueError('invalid separator: %r' % line)
-      i += 2
-      v = line[i:i+vlen]
+    for (_, k, v) in parsetext(lines):
       self.add(k, v)
     return self
 
@@ -376,18 +382,7 @@ class TCDBMaker(CDBMaker):
     return self.add(k, v, self._stack[-1])
 
   def txt2tcdb(self, lines):
-    import re
-    HEAD = re.compile(r'^(\++)(\d+),(\d+):')
-    for line in lines:
-      m = HEAD.match(line)
-      if not m: break
-      (depth, klen, vlen) = (len(m.group(1)), int(m.group(2)), int(m.group(3)))
-      i = len(m.group(0))
-      k = line[i:i+klen]
-      i += klen
-      if line[i:i+2] != '->': raise ValueError('invalid separator: %r' % line)
-      i += 2
-      v = line[i:i+vlen]
+    for (depth, k, v) in parsetext(lines):
       self.put(depth, k, v)
     return self
 
