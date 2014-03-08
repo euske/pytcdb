@@ -1,0 +1,327 @@
+<html>
+<head>
+<title>Tree-like Constant Database (tcdb)</title>
+</head>
+
+<body>
+<h2>Tree-like Constant Database (tcdb)</h2>
+<p class=nav>
+<a href="https://github.com/euske/pytcdb">https://github.com/euske/pytcdb</a>
+
+<p>
+Tree-like Constant Database, or tcdb, is an extension to
+D. J. Bernstein's <a href="http://cr.yp.to/cdb.html">cdb</a> file format.
+tcdb is a hash table that can contain a tree structure whose
+edges and nodes can be represented as key/value pairs.
+tcdb is suitable to represent directory structures or sparse matrices. 
+tcdb is also suitable for storing a large number
+of key/value pairs that have common prefix.
+Like an original cdb file, a tcdb file is immutable, i.e.
+adding to or changing items requires rebuilding the entire file.
+
+<p>
+<strong>Merits:</strong>
+<ul>
+<li> Compact.
+<li> Fast.
+<li> Easy to understand/implement.
+<li> Compatible with cdb.
+</ul>
+<p>
+<strong>Shortcomings:</strong>
+<ul>
+<li> Cannot add or modify (as with cdb).
+<li> Big. (well, depending on your own definition)
+<li> Slow. (because it's pure Python for now)
+<li> Recovering an entire tree structure from a database is inefficient.
+</ul>
+
+<P>
+Table of Contents:
+<ul>
+<li> <a href="#overview">Overview</a>
+<li> <a href="#mechanism">Mechanism</a>
+<li> <a href="#performance">Performance</a>
+<li> <a href="#implementation">Implementation</a>
+</ul>
+
+<a name="overview">
+<hr noshade>
+<h3>Overview</h3>
+<p>
+Here is a sample tree structure that tcdb can represent
+(Figure 1).
+<p>
+<img src="tree1.png"><br>
+Figure 1. Sample tree structure.
+<p>
+In this file, the root node has three child nodes.
+Each node (except the root node) has a string value,
+<code>"123"</code>, <code>"xyz"</code> and <code>"def"</code>
+which can be accessed via a corresponding key,
+<code>"aa"</code>, <code>"bbb"</code> and <code>"cccc"</code>
+respectively.
+The last child has two further child nodes
+<code>"444"</code> and <code>"555"</code>.
+<p>
+Suppose that you're trying to reach the value
+<code>"555"</code> of the bottom-right node.
+You need to start from the root node.
+First, you look up with the key <code>"cccc"</code>
+to reach the <code>"def"</code> node.
+Then you further look up with the key <code>"qq"</code>
+and reach the desired node.
+<h4>Actual use</h4>
+<p>
+tcdb is especially useful for storing a lot of keys that 
+share some parts. The same function can be achieved 
+with the original cdb, but with tcdb you can ``compress'' the 
+keys by putting the shared parts only once.
+<p>
+Here is how a cdb would look like
+if it stores the tree strucutre above:
+<blockquote><pre>
+"aa" -&gt; "123"
+"bbb" -&gt; "xyz"
+"cccc" -&gt; "def"
+"cccc/ppp" -&gt; "444"
+"cccc/qq" -&gt; "555"
+</pre></blockquote>
+And this is how a tcdb looks like:
+<blockquote><pre>
+"aa" -&gt; "123"
+"bbb" -&gt; "xyz"
+"cccc" -&gt; "def"
+        "ppp" -&gt; "444"
+        "qq" -&gt; "555"
+</pre></blockquote>
+<p>
+The gain of the space becomes larger as the shared parts get longer,
+or the nest gets deeper.
+Also, tcdb is suitable for storing a large sparse matrix or
+multi-dimentional associative array.
+For example, the following array:
+<p>
+<blockquote><pre>
+("aaaaa", "aaaa") -&gt; "123"
+("aaaaa", "bbbbb") -&gt; "456"
+("aaaaa", "cccccc") -&gt; "789"
+("aaaaa", "dd") -&gt; "000"
+("bbbbbb", "aaa") -&gt; "111"
+...
+</pre></blockquote>
+can be represented as:
+<blockquote><pre>
+"aaaaa" -&gt; ""
+           "aaaa" -&gt; "123"
+           "bbbbb" -&gt; "456"
+           "cccccc" -&gt; "789"
+           "dd" -&gt; "000"
+"bbbbbb" -&gt; ""
+            "aaa" -&gt; "111"
+...
+</pre></blockquote>
+<P>
+tcdb is also suitable for performing a partial lookup
+for variable-length keys. For example, a dictionary 
+that contains multi-word phrases with common prefixes
+can be represented as follows:
+<blockquote><pre>
+"new" -&gt; "ADJ"
+         "york" -&gt; "PROPER_NOUN"
+                   "city" -&gt; "PROPER_NOUN"
+</pre></blockquote>
+
+<h4>Compatibility with cdb</h4>
+<p>
+tcdb achieves compatibility with the original cdb format,
+i.e. you can read any cdb file with the tcdb tools, and 
+you can also read some tcdb files with the cdb tools.
+The trick is that cdb files are just special cases
+of tcdb files representing a ``flat'' tree: 
+all the nodes are direct descendants of the root node (Figure 2).
+<p>
+<img src="tree0.png"><br>
+Figure 2. cdb structure.
+<p>
+Therefore, any cdb file is a valid tcdb file.
+Contrary, a tcdb file whose height is 1 (i.e. all the nodes
+are connected to the root) can be read/built just as a normal cdb file
+with existing cdb-related tools.
+
+<a name="mechanism">
+<hr noshade>
+<h3>Mechanism</h3>
+<P>
+cdb is a disk-based hash table that uses a 32-bit hash to efficiently
+locate the value corresponding to a given key. The lookup is
+performed against two tables. First, the least significant 8 bits
+of a hash number is used to lookup the first table. Then the exact
+hash number and its corresponding key/value pair is located from
+the second table. For more details, see
+<a href="http://www.unixuser.org/~euske/doc/cdbinternals/index.html">cdb internals</a>.
+<p>
+tcdb inherits its lookup mechanism from cdb.
+The file structure of tcdb format is almost identical to that of cdb,
+except one small difference: the initial value of the hash function.
+In cdb format, a hash number is computed as follows:
+<blockquote><pre>
+h = CDB_HASHSTART;
+for (i = 0; i &lt; length(key); i++) {
+  h = (h * 33) & 0xffffffff ^ key[i];
+}
+</pre></blockquote>
+In cdb, 
+<code>CDB_HASHSTART</code> was always <code>5831</code>.
+In tcdb, this is 
+<code>(5831 + <i>the id of the parent node</i>)</code> instead.
+<blockquote><pre>
+h = CDB_HASHSTART + parent_node_id;
+for (i = 0; i &lt; length(key); i++) {
+  h = (h * 33) & 0xffffffff ^ key[i];
+}
+</pre></blockquote>
+<p>
+The ID of a root node is always 0.
+The ID of any other node is the file offset of the key/value pair 
+of that node. Therefore, a key which is directly accessible
+from a root node has always the same hash with cdb
+(this is how the compatilibity is achieved).
+<p>
+<h4>Look up</h4>
+<p>
+In tcdb, lookup is performed hierarchically.
+A first lookup always starts from the root node, using the parent node id = 0.
+This first lookup is completely identical to that of cdb.
+After retrieving the value associated with that key,
+a second lookup is performed using the file offset value of
+the key/value pair as the parent node id.
+This way, a user can ``descend'' the tree as s/he continues.
+<P>
+Here is an example (Figure 3).
+A user is trying to reach the bottom right node by using
+a sequence of string keys <code>("cccc", "qq")</code>.
+The lookup starts from the root node, whose node id is 0.
+A hash is computed against this node and the first lookup key
+<code>"cccc"</code>. Then the value of the second node is
+located and the lookup continues. The file offset of this second node
+is, say, 3456. This is the node id of the second node.
+The program computes the next hash using this id and
+the next key <code>"qq"</code>, and locate the value of 
+the bottom right node.
+<p>
+<img src="tree2.png"><br>
+Figure 3. Sample lookup.
+<p>
+<p>
+It is guaranteed that the same string key with different initial
+values have always distinct hashes.
+So two same keys that belongs to different parent nodes are
+never mixed up.
+
+<h4>Extended text representation</h4>
+<p>
+tcdb comes with utilities that perform format conversion
+between text files and cdb files, just like 
+<code>cdbmake</code> or <code>cdbmake</code> accompanied with
+the origial cdb distribution.
+In the text representation of a cdb file, each entry (key/value pair)
+starts with a plus sign, followed by a decimal representation 
+of the length of the key, a comma, the length of the value,
+a colon, and actual strings of the key and value separated by
+'<code>-&gt;</code>.' Finally, an entry ends with a newline character.
+<p>
+In tcdb, the textual representation is also extended in order to
+represent hierarchical structure.  Nested key/value pairs are
+denoted with multiple plus signs, just like indentation.  A
+key/value pair that belongs to the root node is represented in the
+exactly same way as cdb.  This way, the compatibility with the cdb
+files is maintained.
+<p>
+For example, a tree structure in Figure 1 can be represented
+as follows:
+<blockquote><pre>
++2,3:aa-&gt;123
++3,3:bbb-&gt;xyz
++4,3:cccc-&gt;def
+++3,3:ppp-&gt;444
+++2,3:qq-&gt;555
+</pre></blockquote>
+
+<a name="performance">
+<hr noshade>
+<h3>Performance</h3>
+<p>
+Except the hash function, 
+the mechanism of building/reading tcdb is the same as that of cdb.
+Threfore, the time to look up a chain of <i>N</i> nodes is exactly
+the total time for <i>N</i> lookups in cdb.
+<P>
+Also, the size of a tcdb file is the size of
+a cdb file that has the same number of the key/value pairs.
+More precisely, 
+<p>
+filesize = 2048 + (24 * <i>the total number of nodes except the root node</i>)
+<p>
+
+<a name="implementation">
+<hr noshade>
+<h3>Implementation</h3>
+<P>
+Currently, there is only a Python implementation:
+<a href="https://github.com/euske/pytcdb/blob/master/pytcdb.py"><code>pytcdb.py</code></a> (11kbytes)
+<p>
+This program includes basic manipulation functions for tcdb files
+as well as its programming interfaces for Python.
+<P>
+(This is slow, but not as bad as you imagine,
+as the lookup performance is mostly disk-bound.
+Of course I'd be very happy if someone could write
+the C version though...)
+
+<h4>Command line interfaces</h4>
+<dl>
+<dt> <code>pytcdb.py tmake <i>tcdbname</i> [<i>file1</i> <i>file2</i> ...]</code>
+<dd> Build a tcdb file from its textual representation,
+just like <code>cdbmake</code>.
+<p>
+<dt> <code>pytcdb.py tdump <i>tcdbname</i></code>
+<dd> Dump a tcdb file (or cdb file) as textual representation
+into the standard output. This is similar to <code>cdbdump</code>.
+<p>
+<dt> <code>pytcdb.py tget <i>tcdbname</i> [<i>key1</i> <i>key2</i> ...]</code>
+<dd> Perform lookups with a given sequence of keys.
+The keys are used in this order, i.e.
+<i>key1</i> is first looked up against the root node.
+Then lookups for <i>key2</i>, <i>key3</i> ... are performed.
+The list of all the values found in this chain is displayed.
+<p>
+<dt> <code>pytcdb.py tmerge <i>tcdbname</i> [<i>cdbfile1</i> <i>cdbfile2</i> ...]</code>
+<dd> Merge multiple tcdb files (or cdb files) into one tcdb file.
+All the keys must be sorted in alphabetical order.
+<p>
+</dl>
+
+<h4>Programming interfaces</h4>
+<ul>
+<li> <code>CDBReader</code> class:
+ equivalent to <code>cdb.init</code>
+<li> <code>CDBWriter</code> class:
+ equivalent to <code>cdb.cdbmake</code>
+</ul>
+<ul>
+<li> <code>TCDBReader</code> class:
+<li> <code>TCDBWriter</code> class:
+</ul>
+
+
+<p>
+
+<hr noshade>
+<P>
+<!-- hhmts start -->
+Last Modified: Sat Mar  8 09:41:57 UTC 2014
+<!-- hhmts end -->
+<address>Yusuke Shinyama </address>
+</body>
+</html>
